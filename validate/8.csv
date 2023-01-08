@@ -1,0 +1,16 @@
+label_name,bbox_x,bbox_y,bbox_width,bbox_height,image_name,image_width,image_height
+v/d,13,22,153,43,sdfkjhsjkdf.png,1166,505
+w/l,48,130,73,21,sdfkjhsjkdf.png,1166,505
+player,98,169,96,20,sdfkjhsjkdf.png,1166,505
+class,52,163,38,38,sdfkjhsjkdf.png,1166,505
+player,98,208,46,17,sdfkjhsjkdf.png,1166,505
+class,52,202,38,38,sdfkjhsjkdf.png,1166,505
+player,99,248,55,18,sdfkjhsjkdf.png,1166,505
+class,53,242,38,38,sdfkjhsjkdf.png,1166,505
+player,99,288,63,17,sdfkjhsjkdf.png,1166,505
+class,53,282,38,38,sdfkjhsjkdf.png,1166,505
+player,99,329,98,18,sdfkjhsjkdf.png,1166,505
+class,53,323,38,38,sdfkjhsjkdf.png,1166,505
+w/l,48,368,69,18,sdfkjhsjkdf.png,1166,505
+player,99,407,89,17,sdfkjhsjkdf.png,1166,505
+class,53,401,38,38,sdfkjhsjkdf.png,1166,505

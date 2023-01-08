@@ -1,0 +1,16 @@
+label_name,bbox_x,bbox_y,bbox_width,bbox_height,image_name,image_width,image_height
+v/d,25,27,155,42,oisudfoiusdf.png,1153,508
+w/l,65,133,71,20,oisudfoiusdf.png,1153,508
+player,114,170,40,19,oisudfoiusdf.png,1153,508
+class,68,164,38,38,oisudfoiusdf.png,1153,508
+player,114,209,115,17,oisudfoiusdf.png,1153,508
+class,68,203,38,38,oisudfoiusdf.png,1153,508
+player,114,248,38,16,oisudfoiusdf.png,1153,508
+class,68,242,38,38,oisudfoiusdf.png,1153,508
+player,115,286,45,16,oisudfoiusdf.png,1153,508
+class,69,280,38,38,oisudfoiusdf.png,1153,508
+player,113,325,60,17,oisudfoiusdf.png,1153,508
+class,67,319,38,38,oisudfoiusdf.png,1153,508
+w/l,65,364,67,17,oisudfoiusdf.png,1153,508
+player,114,402,85,16,oisudfoiusdf.png,1153,508
+class,68,396,38,38,oisudfoiusdf.png,1153,508

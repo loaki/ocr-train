@@ -1,0 +1,10 @@
+label_name,bbox_x,bbox_y,bbox_width,bbox_height,image_name,image_width,image_height
+v/d,18,14,163,48,157.png,1175,393
+w/l,63,126,72,21,157.png,1175,393
+player,113,165,44,18,157.png,1175,393
+class,66,159,39,39,157.png,1175,393
+w/l,63,205,68,18,157.png,1175,393
+player,112,244,51,20,157.png,1175,393
+class,65,238,39,39,157.png,1175,393
+player,114,283,113,19,157.png,1175,393
+class,67,277,39,39,157.png,1175,393
