@@ -1,263 +1,334 @@
-
-
-"""
-Project: Custom Object Detection 
-Author: Jitesh Saini
-Github: https://github.com/jiteshsaini
-website: https://helloworld.co.in
-This code is built using the help of examples provided by the following resources:-
-https://coral.ai/examples/
-https://www.tensorflow.org/lite/examples
-This is an example script demonstrating Object Detection using custom model trained using Tensorflow's Model Maker.
-This script can be used for both custom models created by Model Maker tool or Pretrained Models.
-"""
-
-import time
+import platform
+from typing import List, NamedTuple
+import json
 import numpy as np
-from PIL import Image
-import tflite_runtime.interpreter as tflite
-
 import os
+
+from tflite_support import metadata
+
+import tensorflow as tf
+assert tf.__version__.startswith('2')
+
+tf.get_logger().setLevel('ERROR')
 import cv2
 
-cap = cv2.VideoCapture(0)
+Interpreter = tf.lite.Interpreter
+load_delegate = tf.lite.experimental.load_delegate
 
-edgetpu='0' # make it '1' if Coral Accelerator is attached and use model with 'edgetpu' name
+# pylint: enable=g-import-not-at-top
 
-#====custom model and label files==================
-'''
-model_dir = 'models/custom'
-model = 'custom_detection_model.tflite'
-#model = 'custom_detection_model_edgetpu.tflite'
-label = 'custom_labels.txt'
-'''
-#=================================================
 
-#====pretrained model and label files==================
+class ObjectDetectorOptions(NamedTuple):
+  """A config to initialize an object detector."""
 
-# model_dir = 'models/pretrained'
+  enable_edgetpu: bool = False
+  """Enable the model to run on EdgeTPU."""
 
-# model='mobilenet_ssd_v2_coco_quant_postprocess.tflite'
-# #model='mobilenet_ssd_v2_coco_quant_postprocess_edgetpu.tflite'
+  label_allow_list: List[str] = None
+  """The optional allow list of labels."""
 
-# #model='efficientdet_lite0.tflite'
-# #model='efficientdet_lite0_edgetpu.tflite'
+  label_deny_list: List[str] = None
+  """The optional deny list of labels."""
 
-# label = 'coco_labels.txt'
+  max_results: int = -1
+  """The maximum number of top-scored detection results to return."""
 
-# #=================================================
+  num_threads: int = 1
+  """The number of CPU threads to be used."""
 
-# model_path=os.path.join(model_dir,model)
-# label_path=os.path.join(model_dir,label)
-  
-#--------------------object detection--------------------------------------------------
-def detect_objects(interpreter, image, score_threshold=0.3, top_k=6):
-    """Returns list of detected objects."""
-    set_input_tensor(interpreter, image)
-    #interpreter.invoke()
-    invoke_interpreter(interpreter)
-    
-    # global model_dir
-    # if (model_dir=='models/pretrained'):
-    #   # for pre-trained models
-    #   boxes = get_output_tensor(interpreter, 0)
-    #   class_ids = get_output_tensor(interpreter, 1)
-    #   scores = get_output_tensor(interpreter, 2)
-    #   count = int(get_output_tensor(interpreter, 3))
-    # else:
-      # for custom models made by Model Maker 
-    scores = get_output_tensor(interpreter, 0)
-    boxes = get_output_tensor(interpreter, 1)
-    count = int(get_output_tensor(interpreter, 2))
-    class_ids = get_output_tensor(interpreter, 3)
-  
-    
-    def make(i):
-        ymin, xmin, ymax, xmax = boxes[i]
-        return Object(
-            id=int(class_ids[i]),
-            score=scores[i],
-            bbox=BBox(xmin=np.maximum(0.0, xmin),
-                      ymin=np.maximum(0.0, ymin),
-                      xmax=np.minimum(1.0, xmax),
-                      ymax=np.minimum(1.0, ymax)))
+  score_threshold: float = 0.0
+  """The score threshold of detection results to return."""
 
-    return [make(i) for i in range(top_k) if scores[i] >= score_threshold]
 
-import collections
-Object = collections.namedtuple('Object', ['id', 'score', 'bbox'])
+class Rect(NamedTuple):
+  """A rectangle in 2D space."""
+  left: float
+  top: float
+  right: float
+  bottom: float
 
-class BBox(collections.namedtuple('BBox', ['xmin', 'ymin', 'xmax', 'ymax'])):
-    """Bounding box.
-    Represents a rectangle which sides are either vertical or horizontal, parallel
-    to the x or y axis.
+
+class Category(NamedTuple):
+  """A result of a classification task."""
+  label: str
+  score: float
+  index: int
+
+
+class Detection(NamedTuple):
+  """A detected object as the result of an ObjectDetector."""
+  bounding_box: Rect
+  categories: List[Category]
+
+
+def edgetpu_lib_name():
+  """Returns the library name of EdgeTPU in the current platform."""
+  return {
+      'Darwin': 'libedgetpu.1.dylib',
+      'Linux': 'libedgetpu.so.1',
+      'Windows': 'edgetpu.dll',
+  }.get(platform.system(), None)
+
+
+class ObjectDetector:
+  """A wrapper class for a TFLite object detection model."""
+
+  _OUTPUT_LOCATION_NAME = 'location'
+  _OUTPUT_CATEGORY_NAME = 'category'
+  _OUTPUT_SCORE_NAME = 'score'
+  _OUTPUT_NUMBER_NAME = 'number of detections'
+
+  def __init__(
+      self,
+      model_path: str,
+      options: ObjectDetectorOptions = ObjectDetectorOptions()
+  ) -> None:
+    """Initialize a TFLite object detection model.
+    Args:
+        model_path: Path to the TFLite model.
+        options: The config to initialize an object detector. (Optional)
+    Raises:
+        ValueError: If the TFLite model is invalid.
+        OSError: If the current OS isn't supported by EdgeTPU.
     """
-    __slots__ = ()
-#--------------------------------------------------------------------
 
-#----------Loading Labels----------------------------------------------------
-import re
-def load_labels(path):
-  """Loads the labels file. Supports files with or without index numbers."""
-  
-  with open(path, 'r', encoding='utf-8') as f:
-    lines = f.readlines()
-    labels = {}
-    for row_number, content in enumerate(lines):
-      pair = re.split(r'[:\s]+', content.strip(), maxsplit=1)
-      if len(pair) == 2 and pair[0].strip().isdigit():
-        labels[int(pair[0])] = pair[1].strip()
-      else:
-        labels[row_number] = pair[0].strip()
-  return labels
+    # Load metadata from model.
+    displayer = metadata.MetadataDisplayer.with_model_file(model_path)
 
+    # Save model metadata for preprocessing later.
+    model_metadata = json.loads(displayer.get_metadata_json())
+    process_units = model_metadata['subgraph_metadata'][0]['input_tensor_metadata'][0]['process_units']
+    mean = 0.0
+    std = 1.0
+    for option in process_units:
+      if option['options_type'] == 'NormalizationOptions':
+        mean = option['options']['mean'][0]
+        std = option['options']['std'][0]
+    self._mean = mean
+    self._std = std
 
-#--------------------------------------------------------------------------
+    # Load label list from metadata.
+    file_name = displayer.get_packed_associated_file_list()[0]
+    label_map_file = displayer.get_associated_file_buffer(file_name).decode()
+    label_list = list(filter(lambda x: len(x) > 0, label_map_file.splitlines()))
+    self._label_list = label_list
 
-#------Making Interpreter---------------------------------------------------------
-# import platform
+    # Initialize TFLite model.
+    if options.enable_edgetpu:
+      if edgetpu_lib_name() is None:
+        raise OSError("The current OS isn't supported by Coral EdgeTPU.")
+      interpreter = Interpreter(
+          model_path=model_path,
+          experimental_delegates=[load_delegate(edgetpu_lib_name())],
+          num_threads=options.num_threads)
+    else:
+      interpreter = Interpreter(
+          model_path=model_path, num_threads=options.num_threads)
 
-# EDGETPU_SHARED_LIB = {
-#   'Linux': 'libedgetpu.so.1',
-#   'Darwin': 'libedgetpu.1.dylib',
-#   'Windows': 'edgetpu.dll'
-# }[platform.system()]
-      
-def make_interpreter(path):
+    interpreter.allocate_tensors()
+    input_detail = interpreter.get_input_details()[0]
 
-    # path, *device = path.split('@')
-    # interpreter = tflite.Interpreter(model_path=path,experimental_delegates=[tflite.load_delegate(EDGETPU_SHARED_LIB,{'device': device[0]} if device else {})])
-    interpreter = tflite.Interpreter(model_path=path)
-    
-    return interpreter
+    # From TensorFlow 2.6, the order of the outputs become undefined.
+    # Therefore we need to sort the tensor indices of TFLite outputs and to know
+    # exactly the meaning of each output tensor. For example, if
+    # output indices are [601, 599, 598, 600], tensor names and indices aligned
+    # are:
+    #   - location: 598
+    #   - category: 599
+    #   - score: 600
+    #   - detection_count: 601
+    # because of the op's ports of TFLITE_DETECTION_POST_PROCESS
+    # (https://github.com/tensorflow/tensorflow/blob/a4fe268ea084e7d323133ed7b986e0ae259a2bc7/tensorflow/lite/kernels/detection_postprocess.cc#L47-L50).
+    sorted_output_indices = sorted(
+        [output['index'] for output in interpreter.get_output_details()])
+    self._output_indices = {
+        self._OUTPUT_LOCATION_NAME: sorted_output_indices[0],
+        self._OUTPUT_CATEGORY_NAME: sorted_output_indices[1],
+        self._OUTPUT_SCORE_NAME: sorted_output_indices[2],
+        self._OUTPUT_NUMBER_NAME: sorted_output_indices[3],
+    }
 
-#--------------------------------------------------------------------------
+    self._input_size = input_detail['shape'][2], input_detail['shape'][1]
+    self._is_quantized_input = input_detail['dtype'] == np.uint8
+    self._interpreter = interpreter
+    self._options = options
 
-def input_image_size(interpreter):
-    """Returns input image size as (width, height, channels) tuple."""
-    _, height, width, channels = interpreter.get_input_details()[0]['shape']
-    return width, height, channels
-    
-def set_input_tensor(interpreter, image):
+  def detect(self, input_image: np.ndarray) -> List[Detection]:
+    """Run detection on an input image.
+    Args:
+        input_image: A [height, width, 3] RGB image. Note that height and width
+          can be anything since the image will be immediately resized according
+          to the needs of the model within this function.
+    Returns:
+        A Person instance.
+    """
+    image_height, image_width, _ = input_image.shape
+
+    input_tensor = self._preprocess(input_image)
+
+    self._set_input_tensor(input_tensor)
+    self._interpreter.invoke()
+
+    # Get all output details
+    boxes = self._get_output_tensor(self._OUTPUT_LOCATION_NAME)
+    classes = self._get_output_tensor(self._OUTPUT_CATEGORY_NAME)
+    scores = self._get_output_tensor(self._OUTPUT_SCORE_NAME)
+    count = int(self._get_output_tensor(self._OUTPUT_NUMBER_NAME))
+
+    return self._postprocess(boxes, classes, scores, count, image_width,
+                             image_height)
+
+  def _preprocess(self, input_image: np.ndarray) -> np.ndarray:
+    """Preprocess the input image as required by the TFLite model."""
+
+    # Resize the input
+    input_tensor = cv2.resize(input_image, self._input_size)
+
+    # Normalize the input if it's a float model (aka. not quantized)
+    if not self._is_quantized_input:
+      input_tensor = (np.float32(input_tensor) - self._mean) / self._std
+
+    # Add batch dimension
+    input_tensor = np.expand_dims(input_tensor, axis=0)
+
+    return input_tensor
+
+  def _set_input_tensor(self, image):
     """Sets the input tensor."""
-    image = image.resize((input_image_size(interpreter)[0:2]), resample=Image.NEAREST)
-    #input_tensor(interpreter)[:, :] = image
-    
-    tensor_index = interpreter.get_input_details()[0]['index']
-    input_tensor = interpreter.tensor(tensor_index)()[0]
+    tensor_index = self._interpreter.get_input_details()[0]['index']
+    input_tensor = self._interpreter.tensor(tensor_index)()[0]
     input_tensor[:, :] = image
 
+  def _get_output_tensor(self, name):
+    """Returns the output tensor at the given index."""
+    output_index = self._output_indices[name]
+    tensor = np.squeeze(self._interpreter.get_tensor(output_index))
+    return tensor
 
-def get_output_tensor(interpreter, index):
-  """Returns the output tensor at the given index."""
-  output_details = interpreter.get_output_details()[index]
-  #print(output_details)
-  tensor = np.squeeze(interpreter.get_tensor(output_details['index']))
-  return tensor
+  def _postprocess(self, boxes: np.ndarray, classes: np.ndarray,
+                   scores: np.ndarray, count: int, image_width: int,
+                   image_height: int) -> List[Detection]:
+    """Post-process the output of TFLite model into a list of Detection objects.
+    Args:
+        boxes: Bounding boxes of detected objects from the TFLite model.
+        classes: Class index of the detected objects from the TFLite model.
+        scores: Confidence scores of the detected objects from the TFLite model.
+        count: Number of detected objects from the TFLite model.
+        image_width: Width of the input image.
+        image_height: Height of the input image.
+    Returns:
+        A list of Detection objects detected by the TFLite model.
+    """
+    results = []
 
-def invoke_interpreter(interpreter):
-  global inference_time_ms
-  
-  t1=time.time()
-  interpreter.invoke()
-  inference_time_ms = (time.time() - t1) * 1000
-  print("****Inference time = ", inference_time_ms)
-  
-#--------------------------------------------------------------------------
-#--------Image Overlay---------------------------------------------------------
+    # Parse the model output into a list of Detection entities.
+    for i in range(count):
+      if scores[i] >= self._options.score_threshold:
+        y_min, x_min, y_max, x_max = boxes[i]
+        bounding_box = Rect(
+            top=int(y_min * image_height),
+            left=int(x_min * image_width),
+            bottom=int(y_max * image_height),
+            right=int(x_max * image_width))
+        class_id = int(classes[i])
+        category = Category(
+            score=scores[i],
+            label=self._label_list[class_id],  # 0 is reserved for background
+            index=class_id)
+        result = Detection(bounding_box=bounding_box, categories=[category])
+        results.append(result)
 
-def overlay_text_detection(objs, labels, cv2_im, fps):
-    height, width, channels = cv2_im.shape
-    font=cv2.FONT_HERSHEY_SIMPLEX
-  
-    for obj in objs:
-        x0, y0, x1, y1 = list(obj.bbox)
-        x0, y0, x1, y1 = int(x0*width), int(y0*height), int(x1*width), int(y1*height)
-        percent = int(100 * obj.score)
-        
-        if (percent>=60):
-            box_color, text_color, thickness=(0,255,0), (0,0,0),2
-        elif (percent<60 and percent>40):
-            box_color, text_color, thickness=(0,0,255), (0,0,0),2
-        else:
-            box_color, text_color, thickness=(255,0,0), (0,0,0),1
-            
-       
-        text3 = '{}% {}'.format(percent, labels.get(obj.id, obj.id))
-        print(text3)
-        
-        try:
-          cv2_im = cv2.rectangle(cv2_im, (x0, y0), (x1, y1), box_color, thickness)
-          cv2_im = cv2.rectangle(cv2_im, (x0,y1-10), (x1, y1+10), (255,255,255), -1)
-          cv2_im = cv2.putText(cv2_im, text3, (x0, y1),font, 0.6, text_color, thickness)
-        except:
-          #log_error()
-          pass
-    
-    global model, inference_time_ms
-    str1="FPS: " + str(fps)
-    cv2_im = cv2.putText(cv2_im, str1, (width-180, height-55),font, 0.7, (255, 0, 0), 2)
-    
-    str2="Inference: " + str(round(inference_time_ms,1)) + " ms"
-    cv2_im = cv2.putText(cv2_im, str2, (width-240, height-25),font, 0.7, (255, 0, 0), 2)
-    
-    cv2_im = cv2.rectangle(cv2_im, (0,height-20), (width, height), (0,0,0), -1)
-    cv2_im = cv2.putText(cv2_im, model, (10, height-5),font, 0.6, (0, 255, 0), 2)
-    
-    return cv2_im
-#--------------------------------------------------------------------------
+    # Sort detection results by score ascending
+    sorted_results = sorted(
+        results,
+        key=lambda detection: detection.categories[0].score,
+        reverse=True)
+
+    # Filter out detections in deny list
+    filtered_results = sorted_results
+    if self._options.label_deny_list is not None:
+      filtered_results = list(
+          filter(
+              lambda detection: detection.categories[0].label not in self.
+              _options.label_deny_list, filtered_results))
+
+    # Keep only detections in allow list
+    if self._options.label_allow_list is not None:
+      filtered_results = list(
+          filter(
+              lambda detection: detection.categories[0].label in self._options.
+              label_allow_list, filtered_results))
+
+    # Only return maximum of max_results detection.
+    if self._options.max_results > 0:
+      result_count = min(len(filtered_results), self._options.max_results)
+      filtered_results = filtered_results[:result_count]
+
+    return filtered_results
 
 
-def main():
+_MARGIN = 10  # pixels
+_ROW_SIZE = 10  # pixels
+_FONT_SIZE = 1
+_FONT_THICKNESS = 1
+_TEXT_COLOR = (0, 0, 255)  # red
 
-    model_path = 'object_detection.tflite'
 
-    interpreter = tflite.Interpreter(model_path=model_path)
+def visualize(
+    image: np.ndarray,
+    detections: List[Detection],
+) -> np.ndarray:
+  """Draws bounding boxes on the input image and return it.
+  Args:
+    image: The input RGB image.
+    detections: The list of all "Detection" entities to be visualize.
+  Returns:
+    Image with bounding boxes.
+  """
+  for detection in detections:
+    # Draw bounding_box
+    start_point = detection.bounding_box.left, detection.bounding_box.top
+    end_point = detection.bounding_box.right, detection.bounding_box.bottom
+    cv2.rectangle(image, start_point, end_point, _TEXT_COLOR, 3)
 
-    # interpreter = make_interpreter(model_path, edgetpu)
-  
-    interpreter.allocate_tensors()
-  
-    # labels = load_labels(label_path)
+    # Draw label and score
+    category = detection.categories[0]
+    class_name = category.label
+    probability = round(category.score, 2)
+    result_text = class_name + ' (' + str(probability) + ')'
+    text_location = (_MARGIN + detection.bounding_box.left,
+                     _MARGIN + _ROW_SIZE + detection.bounding_box.top)
+    cv2.putText(image, result_text, text_location, cv2.FONT_HERSHEY_PLAIN,
+                _FONT_SIZE, _TEXT_COLOR, _FONT_THICKNESS)
 
-    cv2_im = cv2.imread('img.jpg') 
+  return image
 
-    cv2_im_rgb = cv2.cvtColor(cv2_im, cv2.COLOR_BGR2RGB)
-    image = Image.fromarray(cv2_im_rgb)
-       
-        
-    results = detect_objects(interpreter, image)
-    print(results)
-#   fps=1
+from PIL import Image
 
-#   while True:
-    
-        # start_time=time.time()
-        
-        # ret, frame = cap.read()
-        # if not ret:
-        #     break
-        
-        # cv2_im = frame
-        #cv2_im = cv2.flip(cv2_im, 0) #vertical flip
-        #cv2_im = cv2.flip(cv2_im, 1) #horzontal flip
+DETECTION_THRESHOLD = 0.2 #@param {type:"number"}
+TFLITE_MODEL_PATH = "object_detection.tflite" #@param {type:"string"}
 
-        # cv2_im_rgb = cv2.cvtColor(cv2_im, cv2.COLOR_BGR2RGB)
-        # image = Image.fromarray(cv2_im_rgb)
-       
-        
-        # results = detect_objects(interpreter, image)
-        # print(results)
-        # cv2_im = overlay_text_detection(results, labels, cv2_im, fps)
-       
-        # if cv2.waitKey(1) & 0xFF == ord('q'):
-        #     break
-            
-        # cv2.imshow('Detect Objects', cv2_im)
-        
-        # elapsed_ms = (time.time() - start_time) * 1000
-        # fps=round(1000/elapsed_ms,1)
-        # print("--------fps: ",fps,"---------------")
-        
-if __name__ == '__main__':
-    main()
+TEMP_FILE = 'img.jpg'
+
+image = Image.open(TEMP_FILE).convert('RGB')
+image.thumbnail((640, 640), Image.ANTIALIAS)
+image_np = np.asarray(image)
+
+# Load the TFLite model
+options = ObjectDetectorOptions(
+      num_threads=4,
+      score_threshold=DETECTION_THRESHOLD,
+)
+detector = ObjectDetector(model_path=TFLITE_MODEL_PATH, options=options)
+
+# Run object detection estimation using the model.
+detections = detector.detect(image_np)
+
+print(detections)
+# Draw keypoints and edges on input image
+image_np = visualize(image_np, detections)
+
+# Show the detection result
+
+im = Image.fromarray(image_np)
+im.save('my_pic.png')
