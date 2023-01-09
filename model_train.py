@@ -1,3 +1,5 @@
+# https://colab.research.google.com/github/khanhlvg/tflite_raspberry_pi/blob/main/object_detection/Train_custom_model_tutorial.ipynb#scrollTo=_MClfpsJAfda
+
 #%%
 import numpy as np
 import os
@@ -17,13 +19,13 @@ logging.set_verbosity(logging.ERROR)
 train_data = object_detector.DataLoader.from_pascal_voc(
     'train',
     'train',
-    ['v/d', 'w/l', 'player', 'class']
+    ['vd', 'wl', 'player', 'class']
 )
 
 val_data = object_detector.DataLoader.from_pascal_voc(
     'validate',
     'validate',
-    ['v/d', 'w/l', 'player', 'class']
+    ['vd', 'wl', 'player', 'class']
 )
 
 #%%
