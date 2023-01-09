@@ -3,7 +3,7 @@ import csv
 from os import listdir
 import os
 
-FOLDER = 'validate/'
+FOLDER = 'train/'
 
 def ocr(img):
 
@@ -70,11 +70,11 @@ def ocr(img):
             else:
                 cv2.rectangle(img, (x, y), (x + w, y + h), (50, 50, 50), 1)
 
-    cv2.imshow('x', img)
-    k = cv2.waitKey()
-    cv2.destroyAllWindows()
+    # cv2.imshow('x', img)
+    # k = cv2.waitKey()
+    # cv2.destroyAllWindows()
         
-    return k, objects_xml
+    return 118, objects_xml
 
 def check():
     bad = []

@@ -1,8 +1,8 @@
 
     <annotation>
         <folder>train/</folder>
-        <filename>112.png</filename>
-        <path>train/112.png</path>
+        <filename>112.jpg</filename>
+        <path>train/112.jpg</path>
         <source>
             <database>Unspecified</database>
         </source>
